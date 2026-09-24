@@ -8,11 +8,11 @@ from .utils import graph_processing, multi_input
 
 
 class camD_Feeder(Dataset):
-    def __init__(self, phase, graph, root_folder, inputs, debug, ball=False, object_folder='', window=[0, 41], processing='default', person_id=[0], input_dims=2, **kwargs):
+    def __init__(self, phase, graph, root_folder, inputs, debug, obj=False, max_frame=80, object_folder='', processing='default', person_id=[0], input_dims=2, **kwargs):
         self.phase = phase
         self.inputs = inputs
         self.processing = processing
-        self.ball = ball
+        self.obj = obj
         self.debug = debug
         
         self.graph = graph.graph
@@ -22,6 +22,7 @@ class camD_Feeder(Dataset):
         self.num_person = graph.num_person
         
         self.input_dims = input_dims # expected to be 3 (x,y,conf)
+        self.max_frame = max_frame
         self.M = len(person_id)
         self.datashape = self.get_datashape()
 
@@ -38,9 +39,9 @@ class camD_Feeder(Dataset):
             with open(label_path, 'rb') as f:
                 self.label = pickle.load(f)
             
-            if ball:
+            if obj:
                 logging.info('Loading {} object data from '.format(phase) + object_json_path)
-                self.object_data, self.object_names = self.load_obj_data(object_json_path)
+                self.object_data, self.object_names = self.load_obj_data(object_json_path, phase)
                 # (N, T, v, C) -> (N, C, T, v)
                 self.object_data = self.object_data.transpose(0, 3, 1, 2)
                 
@@ -51,7 +52,7 @@ class camD_Feeder(Dataset):
                 # (N, C, T, V, M) -> (N, C, T, V+v, M)
                 self.data = np.concatenate((self.data, self.object_data), axis = 3)
             else:
-                # If no ball/object integration requested, set object_names to None
+                # If no object integration requested, set object_names to None
                 self.object_names = None
             
             self.data = self.data[:, :self.input_dims, :, :, :]
@@ -87,7 +88,7 @@ class camD_Feeder(Dataset):
         
         # object name to return
         obj_name = None
-        if self.ball and self.object_names is not None:
+        if self.obj and self.object_names is not None:
             # safe guard: object_names length may be shorter; default to "unknown"
             if idx < len(self.object_names):
                 obj_name = self.object_names[idx]
@@ -100,7 +101,7 @@ class camD_Feeder(Dataset):
         I = len(self.inputs) if self.inputs.isupper() else 1
         C = self.input_dims if self.inputs in [
             'joint', 'joint-motion', 'bone', 'bone-motion'] else self.input_dims*2
-        T = len(range(*self.window))
+        T = self.max_frame
         V = self.num_node
         M = self.M // self.num_person
         return [I, C, T, V, M]
@@ -152,7 +153,7 @@ class camD_Feeder(Dataset):
 
         for i, coords in enumerate(obj_list):
             if coords is None:
-                obj_np[i, :, 0, :] = np.nan
+                obj_np[i, :, 0, :] = 0.0
             else:
                 # coords might be shorter/longer than T_pose — handle by trunc/pad with nan
                 t_len = coords.shape[0]
@@ -160,6 +161,6 @@ class camD_Feeder(Dataset):
                     obj_np[i, :, 0, :] = coords[:T_pose, :]
                 else:
                     obj_np[i, :t_len, 0, :] = coords
-                    obj_np[i, t_len:, 0, :] = np.nan
+                    obj_np[i, t_len:, 0, :] = 0.0
 
         return obj_np, obj_names

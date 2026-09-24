@@ -8,7 +8,7 @@ work_dir: ./workdir
 # Data Loader
 dataset: camD
 dataset_args:
-  graph: coco_ball-12
+  graph: coco_ball-6
   labeling: intra-inter
   inter_link: pairwise
   hop: 1
@@ -17,12 +17,12 @@ dataset_args:
   eval_batch_size: 16
   inputs: JVBM
   transform: False
-  ball: True
-  window: [10, 30]
-  input_dims: 2
+  obj: True
+  max_frame: 100
+  input_dims: 3
   person_id: [0,1,2,3,4,5]
-  root_folder: ../
-  object_folder: ../objects
+  root_folder: ./data/camD
+  object_folder: ./data/camD
 
 # Model
 model_type: MPGCN
