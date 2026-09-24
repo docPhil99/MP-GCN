@@ -64,14 +64,10 @@ class CamD_Reader():
 
         # Fill skeleton_data
         frame_cnt = 0 #used to populate the skeleton array (index)
-        frames_dict = pose_data.get("frames", {})
+        
+        reduced_list = self.downsample_frames(pose_data)
 
-        len_frames = len(frames_dict.keys()) # length of video frames
-
-        reduced_list = self.downsample_frames(len_frames)
-
-        for frame_idx in sorted(frames_dict.keys(), key=lambda x: int(x)):
-            frame_data = frames_dict[frame_idx]
+        for frame_data in pose_data.get("frames", {}):
             
             t = frame_data["frame_index"]
 
@@ -172,17 +168,21 @@ class CamD_Reader():
             self.gendata(phase)
 
 
-    def downsample_frames(self, len_frames, random_idx=False):
+    def downsample_frames(self, pose_data, random_idx=False):
         """
         Downsample a list of video frames to a specified target length.
         
         Args:
-            len_frames (int): length of video frames.
+            pose_data (dict): dictionary of pose information.
             target_frame_count (int): The desired number of frames after downsampling.
             
         Returns:
             list: A uniformly downsampled list of frames.
         """
+
+        frames_dict = pose_data.get("frames", {})
+
+        len_frames = len(frames_dict) # length of video frames
         
         T = len_frames - self.min_frame_id - self.last_n_frames
 
