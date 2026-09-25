@@ -55,8 +55,7 @@ class Processor(Initializer):
             self.scalar_writer.add_scalar(
                 'train_acc', train_acc, self.global_step)
         logging.info('Epoch: {}/{}, Training accuracy: {:d}/{:d}({:.2%})'.format(
-            epoch +
-            1, self.max_epoch, num_top1, num_sample, train_acc
+            epoch + 1, self.max_epoch, num_top1, num_sample, train_acc
         ))
         logging.info('')
 
@@ -98,15 +97,15 @@ class Processor(Initializer):
                 for i in range(x.size(0)):
                     cm[y[i], reco_top1[i]] += 1
 
-
         # Showing Evaluating Results
         acc_top1 = num_top1 / num_sample
         acc_top5 = num_top5 / num_sample
+        
         # MPCA
         acc_perclass = [0] * self.num_class
         for i in range(self.num_class):
             num_c = sum(cm[i])
-            acc_perclass[i] = cm[i, i] / num_c
+            acc_perclass[i] = cm[i, i] / (num_c if num_c > 0 else 1e-6)
         mpca = sum(acc_perclass) / self.num_class
         eval_loss = sum(eval_loss) / len(eval_loss)
         eval_time = time() - start_eval_time
@@ -129,135 +128,111 @@ class Processor(Initializer):
 
         return acc_top1, acc_top5, cm, score
 
-    def start(self):
+    def run_fold(self, fold_idx):
+        """Executes full training/eval sequence for a single fold."""
+        # Update directories and loaders for current fold
+        self.save_dir = os.path.join(self.args.work_dir, f'fold_{fold_idx}')
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        # Re-initialize dataloaders, model, optimizer, scheduler for fold
+        if hasattr(self, 'init_fold_environment'):
+            self.init_fold_environment(fold_idx)
+
         start_time = time()
-        if self.args.evaluate:
-            if self.args.debug:
-                logging.warning('Warning: Using debug setting now!')
-                logging.info('')
+        start_epoch = 0
+        best_state = {
+            'acc_top1': 0, 
+            'acc_top5': 0,
+            'acc_top1_last': 0,
+            'cm': 0, 
+            'best_epoch': 0
+        }
+        best_score = {}
 
-            # Loading Evaluating Model
-            logging.info('Loading evaluating model ...')
-            checkpoint = utils.load_checkpoint(
-                self.args.work_dir, self.model_name)
+        if self.args.resume:
+            logging.info(f'Loading fold {fold_idx} checkpoint ...')
+            checkpoint = utils.load_checkpoint(self.save_dir, self.model_name)
             if checkpoint:
-                self.model.module.load_state_dict(checkpoint['model'])
-            logging.info('Successful!')
-            logging.info('')
-
-            # Evaluating
-            logging.info('Starting evaluating ...')
-            self.eval()
-            logging.info('Finish evaluating!')
-
-        else:
-            # Resuming
-            start_epoch = 0
-            best_state = {'acc_top1': 0, 'acc_top5': 0,
-                          'acc_top1_last': 0,
-                          'cm': 0, 'best_epoch': 0}
-            best_score = {}
-            if self.args.resume:
-                logging.info('Loading checkpoint ...')
-                checkpoint = utils.load_checkpoint(self.args.work_dir, self.model_name)
                 self.model.module.load_state_dict(checkpoint['model'])
                 self.optimizer.load_state_dict(checkpoint['optimizer'])
                 self.scheduler.load_state_dict(checkpoint['scheduler'])
                 start_epoch = checkpoint['epoch']
                 best_state.update(checkpoint['best_state'])
                 self.global_step = start_epoch * len(self.train_loader)
-                logging.info('Start epoch: {}'.format(start_epoch+1))
-                logging.info('Best accuracy: {:.2%}'.format(
-                    best_state['acc_top1']))
-                logging.info('Successful!')
-                logging.info('')
 
-            # Training
-            logging.info('Starting training ...')
-            for epoch in range(start_epoch, self.max_epoch):
+        logging.info(f'--- Starting Fold {fold_idx + 1}/10 ---')
+        for epoch in range(start_epoch, self.max_epoch):
+            self.train(epoch)
 
-                # Training
-                self.train(epoch)
+            is_best = False
+            if (epoch + 1) % self.eval_interval(epoch) == 0:
+                logging.info(f'Evaluating fold {fold_idx + 1} for epoch {epoch + 1}/{self.max_epoch} ...')
+                acc_top1, acc_top5, cm, score = self.eval()
+                
+                if acc_top1 > best_state['acc_top1']:
+                    is_best = True
+                    best_state.update({
+                        'acc_top1': acc_top1, 
+                        'acc_top5': acc_top5, 
+                        'cm': cm, 
+                        'best_epoch': epoch + 1
+                    })
+                    best_score = score
+                best_state.update({'acc_top1_last': acc_top1})
 
-                # Evaluating
-                is_best = False
-                if (epoch+1) % self.eval_interval(epoch) == 0:
-                    logging.info(
-                        'Evaluating for epoch {}/{} ...'.format(epoch+1, self.max_epoch))
-                    acc_top1, acc_top5, cm, score = self.eval()
-                    if acc_top1 > best_state['acc_top1']:
-                        is_best = True
-                        best_state.update(
-                            {'acc_top1': acc_top1, 'acc_top5': acc_top5, 'cm': cm, 'best_epoch': epoch+1})
-                        best_score = score
-                    best_state.update({'acc_top1_last': acc_top1})
-
-                # Saving Model
-                logging.info(
-                    'Saving model for epoch {}/{} ...'.format(epoch+1, self.max_epoch))
+                # Save checkpoint in fold-specific directory
                 utils.save_checkpoint(
-                    self.model.module.state_dict(), self.optimizer.state_dict(), self.scheduler.state_dict(),
-                    epoch+1, best_state, is_best, self.args.work_dir, self.save_dir, self.model_name
+                    self.model.module.state_dict(), 
+                    self.optimizer.state_dict(), 
+                    self.scheduler.state_dict(),
+                    epoch + 1, 
+                    best_state, 
+                    is_best, 
+                    self.args.work_dir, 
+                    self.save_dir, 
+                    self.model_name
                 )
-                logging.info('Best top-1 accuracy: {:.2%}@{}th epoch, Total time: {}'.format(
-                    best_state['acc_top1'], best_state['best_epoch'], utils.get_time(
-                        time()-start_time)
+                logging.info('Fold {} Best top-1 accuracy: {:.2%}@{}th epoch'.format(
+                    fold_idx + 1, best_state['acc_top1'], best_state['best_epoch']
                 ))
-                logging.info('')
-            np.savetxt('{}/cm.csv'.format(self.save_dir),
-                       cm, fmt="%s", delimiter=",")
-            with open('{}/score.pkl'.format(self.save_dir), 'wb') as f:
-                pickle.dump(best_score, f)
-            logging.info('Finish training!')
-            logging.info('')
 
-    def extract(self):
-        logging.info('Starting extracting ...')
-        if self.args.debug:
-            logging.warning('Warning: Using debug setting now!')
-            logging.info('')
+        np.savetxt(f'{self.save_dir}/cm.csv', best_state['cm'], fmt="%s", delimiter=",")
+        with open(f'{self.save_dir}/score.pkl', 'wb') as f:
+            pickle.dump(best_score, f)
 
-        # Loading Model
-        logging.info('Loading evaluating model ...')
-        checkpoint = utils.load_model(self.args.work_dir, self.model_name)
-        if checkpoint:
-            self.cm = checkpoint['best_state']['cm']
-            self.model.module.load_state_dict(checkpoint['model'])
-        logging.info('Successful!')
-        logging.info('')
+        return best_state['acc_top1'], best_state['acc_top5']
 
-        eval_iter = tqdm(self.eval_loader, dynamic_ncols=True)
+    def start(self):
+        n_folds = getattr(self.args, 'n_splits', 10)
 
-        self.model.eval()
+        if self.args.evaluate:
+            logging.info('Starting evaluation across folds ...')
+            fold_accs = []
+            for fold_idx in range(n_folds):
+                self.save_dir = os.path.join(self.args.work_dir, f'fold_{fold_idx}')
+                if hasattr(self, 'init_fold_environment'):
+                    self.init_fold_environment(fold_idx)
+                
+                checkpoint = utils.load_checkpoint(self.save_dir, self.model_name)
+                if checkpoint:
+                    self.model.module.load_state_dict(checkpoint['model'])
+                acc_top1, _, _, _ = self.eval()
+                fold_accs.append(acc_top1)
+            
+            logging.info(f'10-Fold Mean Evaluation Top-1 Accuracy: {np.mean(fold_accs):.2%} ± {np.std(fold_accs):.2%}')
 
-        out = []
-        names = []
-        features = []
-        labels = []
-        with torch.no_grad():
-            for num, (x, y, name, obj_name) in enumerate(eval_iter):
-                names.extend(name)
-                labels.extend(y)
-                x = x.float().to(self.device)
+        else:
+            fold_top1_accs = []
+            fold_top5_accs = []
 
-                dy, feature = self.model(x)
-                features.extend(feature.detach().cpu().numpy())
-                out.extend(dy.detach().cpu().numpy())
+            for fold_idx in range(n_folds):
+                top1, top5 = self.run_fold(fold_idx)
+                fold_top1_accs.append(top1)
+                fold_top5_accs.append(top5)
 
-        out = torch.Tensor(out)
-        out = torch.nn.functional.softmax(out, dim=1).detach().cpu().numpy()
-        weight = self.model.module.fcn.weight.squeeze().detach().cpu().numpy()
-
-        # Saving Data
-        if not self.args.debug:
-            save_path = os.path.join(self.args.work_dir, 'extraction.npz')
-            np.savez(save_path,
-                     name=names,
-                     label=labels,
-                     out=out,
-                     feature=features,
-                     weight=weight
-                     )
-
-        logging.info('Finish extracting!')
-        logging.info('')
+            # Log overall Cross-Validation statistics
+            logging.info('================ Cross Validation Complete ================')
+            logging.info(f'Top-1 Accuracy across folds: {[round(a * 100, 2) for a in fold_top1_accs]}')
+            logging.info(f'Mean Top-1 Accuracy: {np.mean(fold_top1_accs):.2%} ± {np.std(fold_top1_accs):.2%}')
+            logging.info(f'Mean Top-5 Accuracy: {np.mean(fold_top5_accs):.2%} ± {np.std(fold_top5_accs):.2%}')
+            logging.info('===========================================================')
