@@ -226,6 +226,15 @@ class Processor(Initializer):
             fold_top5_accs = []
 
             for fold_idx in range(n_folds):
+                # 1. Re-initialize model weights and move to device
+                self.init_model()
+
+                # 2. Reset optimizer state
+                self.init_optimizer()
+
+                # 3. Reset learning rate scheduler state
+                self.init_lr_scheduler()
+
                 top1, top5 = self.run_fold(fold_idx)
                 fold_top1_accs.append(top1)
                 fold_top5_accs.append(top5)
